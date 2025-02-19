@@ -8,10 +8,10 @@ import time
 # --------------------------
 GPIO.setmode(GPIO.BOARD)
 # Setup GPIO output pins (adjust these pins as per your wiring)
-GPIO.setup(7, GPIO.OUT)    # Left Motor (controls forward/backward)
-GPIO.setup(11, GPIO.OUT)   # Left Motor (controls backward/forward)
-GPIO.setup(13, GPIO.OUT)   # Right Motor (controls forward/backward)
-GPIO.setup(15, GPIO.OUT)   # Right Motor (controls backward/forward)
+GPIO.setup(7, GPIO.OUT)   # Left Motor Forward / Backward control
+GPIO.setup(11, GPIO.OUT)  # Left Motor Backward / Forward control
+GPIO.setup(13, GPIO.OUT)  # Right Motor Forward / Backward control
+GPIO.setup(15, GPIO.OUT)  # Right Motor Backward / Forward control
 
 def move_forward():
     # Moves bot forward (to the right)
@@ -19,7 +19,7 @@ def move_forward():
     GPIO.output(11, True)
     GPIO.output(13, True)
     GPIO.output(15, False)
-    print("Moving forward")
+    print("Moving Forward")
 
 def move_backward():
     # Moves bot backward (to the left)
@@ -30,30 +30,34 @@ def move_backward():
     print("Moving Backward")
 
 def point_turn_left():
-    """Perform a point turn to the left (counterclockwise)."""
+    """Performs a point turn (spin in place) to the left (counterclockwise)."""
     GPIO.output(7, True)
     GPIO.output(11, False)
     GPIO.output(13, True)
     GPIO.output(15, False)
+    time.sleep(1)  # Adjust this delay for the desired turn angle
     print("Turning left")
-    time.sleep(1)  # Adjust duration for desired turn angle
     stop()
 
 def point_turn_right():
-    """Perform a point turn to the right (clockwise)."""
+    """Performs a point turn (spin in place) to the right (clockwise)."""
     GPIO.output(7, False)
     GPIO.output(11, True)
     GPIO.output(13, False)
     GPIO.output(15, True)
-    print("Turning left")
-    time.sleep(1)  # Adjust duration for desired turn angle
+    time.sleep(1)  # Adjust this delay for the desired turn angle
+    print("Turning right")
     stop()
 
-def point_turn_180():
-    """Perform a 180° turn by doing two point turns."""
-    point_turn_left()
-    point_turn_left()
-    print("Turning left")
+def turn_180():
+    """Performs a 180-degree turn (two consecutive point turns)."""
+    GPIO.output(7, False)
+    GPIO.output(11, True)
+    GPIO.output(13, False)
+    GPIO.output(15, True)
+    print("Turning 180")
+    time.sleep(2)  # Adjust this delay for a full 180-degree turn
+    stop()
 
 def stop():
     GPIO.output(7, False)
@@ -79,36 +83,32 @@ BLUE = (0, 0, 255)
 
 # Bot settings
 bot_size = 15
-bot_pos = [50, 125]  # Starting position in row group 0 (rows 1 & 2)
-# Our state variable will drive the behavior:
-# "FORWARD_ROW1", "CHECK_PLANT", "POINT_TURN_1", "MOVE_DIAGONAL", "DETECT_RFID2",
-# "POINT_TURN_180", "FORWARD_ROW2"
-state = "FORWARD_ROW1"
-# current_row_group: 0 for rows 1 & 2; 1 for rows 3 & 4
-current_row_group = 0
+bot_pos = [50, 125]  # Start position
+# Extended states: Added "TURN_180" and "FORWARD_ROWS_3_4" states
+direction = "FORWARD"  # Initial state
+current_row_group = 0  # 0 for rows 1 & 2; will be set to 1 after turn
 
 # Plant settings
-plant_spacing = 100          # Horizontal distance between plants
-row_positions = [100, 150, 200, 250]  # Y-coordinates for rows
+plant_spacing = 100  # Distance between plants
+row_positions = [100, 150, 200, 250]  # Y positions for rows
 plants_per_row = 6
-plants = [
-    [(100 + i * plant_spacing, row) for i in range(plants_per_row)]
-    for row in row_positions
-]
+plants = [[(100 + i * plant_spacing, row) for i in range(plants_per_row)] for row in row_positions]
 checked_plants = set()
 
-# RFID settings (simulation waypoints)
+# RFID settings
 rfid_positions = [
-    (650, 125),  # RFID1: End of row 1 (row group 0)
-    (50, 225),   # RFID2: On the left after diagonal move (start of row group 1)
-    (650, 225)   # RFID3: End of row 4 (final RFID)
+    (650, 125),  # RFID marker at end of row 1 (first RFID)
+    (50, 225),   # RFID marker used after turning (midpoint RFID)
+    (650, 225)   # RFID marker at end of rows 3 & 4 (final RFID)
 ]
 
 # Simulation settings
 speed = 2
-check_distance = 20      # Proximity threshold for plant or RFID detection
-check_timer = 0          # Timer for plant checking (in frames)
-check_duration = 30      # Duration (frames) to "check" a plant
+check_distance = 20  # Distance threshold for plant or RFID detection
+check_timer = 0      # Timer for plant checking (in frames)
+check_duration = 30  # Frames to "check" a plant
+turning = False
+midpoint_rfid_detected = False
 
 # --------------------------
 # Main Simulation Loop
@@ -121,7 +121,7 @@ try:
             if event.type == pygame.QUIT:
                 running = False
 
-        # Draw plants (green if unchecked, yellow if checked)
+        # Draw plants
         for row in plants:
             for pos in row:
                 color = YELLOW if pos in checked_plants else GREEN
@@ -131,94 +131,116 @@ try:
         for rfid in rfid_positions:
             pygame.draw.rect(screen, RED, (*rfid, 20, 20))
 
-        # ---------------
-        # State Machine
-        # ---------------
-
-        # STATE 1: Move forward along row group 0 (rows 1 & 2)
-        if state == "FORWARD_ROW1":
+        # --------------------------
+        # Navigation State Machine
+        # --------------------------
+        # 1. Moving forward in first row group (rows 1 & 2)
+        if direction == "FORWARD" and not turning:
             move_forward()
             bot_pos[0] += speed
 
-            # Check for plants
+            # Check for plant in current row group (rows 1 & 2)
             for plant_row in plants[current_row_group * 2 : current_row_group * 2 + 2]:
                 for plant in plant_row:
                     if abs(bot_pos[0] - plant[0]) < check_distance and plant not in checked_plants:
                         stop()
-                        state = "CHECK_PLANT"
+                        direction = "CHECK_PLANT"
                         current_plant = plant
                         check_timer = 0
                         break
 
-            # When RFID1 is detected (x near 650)...
-            if abs(bot_pos[0] - rfid_positions[0][0]) < check_distance:
+            # Check if RFID at end of row 1 is detected
+            if current_row_group == 0 and abs(bot_pos[0] - rfid_positions[0][0]) < check_distance:
                 stop()
-                # Transition to point turn to prepare for diagonal movement
-                state = "POINT_TURN_1"
+                turning = True
+                direction = "POINT_TURN_1"
 
-        # STATE 2: First point turn at RFID1
-        elif state == "POINT_TURN_1":
-            point_turn_left()  # Turn 90° left to face downward/left
-            state = "MOVE_DIAGONAL"
+        # 2. First Point Turn (at end of row 1)
+        elif direction == "POINT_TURN_1":
+            point_turn_left()
+            direction = "MOVE_DOWN"
+            turning = False
 
-        # STATE 3: Move Diagonally (down and left) until RFID2 is detected
-        elif state == "MOVE_DIAGONAL":
-            # Simulate diagonal movement: update x and y manually.
-            # For a true bot, you would adjust individual motor speeds.
-            bot_pos[0] -= speed  # move left
-            bot_pos[1] += speed  # move down
-            # (Optionally, you might send a combined motor command if available.)
-            # Check if we are near RFID2:
-            if (abs(bot_pos[0] - rfid_positions[1][0]) < check_distance and
-                abs(bot_pos[1] - rfid_positions[1][1]) < check_distance):
+        # 3. Moving Down (to align with the next row)
+        elif direction == "MOVE_DOWN":
+            # Move down until reaching y = 225
+            if bot_pos[1] < 225:
+                # Using move_backward() here to simulate vertical adjustment
+                move_backward()
+                bot_pos[1] += speed
+            else:
                 stop()
-                state = "POINT_TURN_180"
+                direction = "POINT_TURN_2"
 
-        # STATE 4: Perform a 180° turn so the bot now faces right (for row group 1)
-        elif state == "POINT_TURN_180":
-            point_turn_180()
-            # Now the bot is facing right. Switch row group to 1.
+        # 4. Second Point Turn (to align with path for rows 3 & 4)
+        elif direction == "POINT_TURN_2":
+            point_turn_right()
+            # Set row group to 1 so that we are in rows 3 & 4 now
             current_row_group = 1
-            state = "FORWARD_ROW2"
+            direction = "FORWARD_TO_ROW_3"
 
-        # STATE 5: Move forward along row group 1 (rows 3 & 4)
-        elif state == "FORWARD_ROW2":
+        # 5. Moving forward to detect the second RFID
+        elif direction == "FORWARD_TO_ROW_3":
             move_forward()
             bot_pos[0] += speed
 
-            # Check for plants in row group 1
+            # Check if the second RFID (midpoint) is detected
+            if abs(bot_pos[0] - rfid_positions[1][0]) < check_distance and abs(bot_pos[1] - rfid_positions[1][1]) < check_distance:
+                stop()
+                direction = "TURN_180"
+                midpoint_rfid_detected = True
+                print("🔄 Detected midpoint RFID, turning 180 degrees...")
+
+        # 6. Perform 180-degree turn after detecting the second RFID
+        elif direction == "TURN_180":
+            turn_180()
+            direction = "FORWARD_ROWS_3_4"
+            print("🔄 Completed 180-degree turn, now moving between rows 3 and 4...")
+
+        # 7. Moving forward along rows 3 & 4 after the 180-degree turn
+        elif direction == "FORWARD_ROWS_3_4":
+            move_forward()
+            bot_pos[0] += speed
+
+            # Check for plants in row group 1 (rows 3 & 4)
             for plant_row in plants[current_row_group * 2 : current_row_group * 2 + 2]:
                 for plant in plant_row:
                     if abs(bot_pos[0] - plant[0]) < check_distance and plant not in checked_plants:
                         stop()
-                        state = "CHECK_PLANT"
+                        direction = "CHECK_PLANT"
                         current_plant = plant
                         check_timer = 0
                         break
 
-            # When the bot reaches or passes RFID3 (x >= 650)...
-            if bot_pos[0] >= rfid_positions[2][0]:
+            # If the bot has reached (or passed) the final RFID marker
+            if abs(bot_pos[0] - rfid_positions[2][0]) < check_distance and abs(bot_pos[1] - rfid_positions[2][1]) < check_distance:
                 stop()
                 print("✅ Task Complete: All rows checked. Stopping bot.")
                 running = False
 
-        # STATE 6: Check Plant State (common to both row groups)
-        elif state == "CHECK_PLANT":
+        # 8. Plant Checking State (common for both row groups)
+        elif direction == "CHECK_PLANT":
             stop()
             check_timer += 1
             pygame.draw.line(screen, BLUE, bot_pos, current_plant, 2)
             if check_timer >= check_duration:
                 checked_plants.add(current_plant)
-                # Resume movement based on row group
-                if current_row_group == 1:
-                    state = "FORWARD_ROW2"
+                # Resume movement based on current state
+                if midpoint_rfid_detected:
+                    direction = "FORWARD_ROWS_3_4"
                 else:
-                    state = "FORWARD_ROW1"
+                    direction = "FORWARD_TO_ROW_3" if current_row_group == 1 else "FORWARD"
                 check_timer = 0
 
-        # ---------------
-        # Draw the bot (as a blue square)
+        # --------------------------
+        # Draw the Bot
+        # --------------------------
         pygame.draw.rect(screen, BLUE, (*bot_pos, bot_size, bot_size))
+
+        # Display state information
+        font = pygame.font.SysFont(None, 24)
+        state_text = font.render(f"State: {direction}", True, (0, 0, 0))
+        screen.blit(state_text, (10, 10))
 
         pygame.display.flip()
         pygame.time.delay(30)
